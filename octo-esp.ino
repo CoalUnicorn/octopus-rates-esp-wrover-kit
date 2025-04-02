@@ -7,7 +7,7 @@
 #include <arduino_secrets.h>
 
 char ssid[] = SECRET_SSID;
-char pass[] = SECRET_PASS;
+char password[] = SECRET_PASS;
 // Replace with your network credentials
 // const char* ssid = "";     // Your Wi-Fi SSID
 // const char* password = ""; // Your Wi-Fi password
@@ -40,7 +40,7 @@ bool displayDrawn = false;
 // Define new height allocations
 uint16_t currentRateHeight = 60;    // Height for current rate display
 uint16_t barChartHeight = 130;      // Height for bar chart display
-uint16_t nextFiveRatesHeight = 130; // Height for next five rates display
+uint16_t nextRatesHeight = 130; // Height for next five rates display
 
 // Define a new color constant for bright red
 #define BRIGHT_RED 0xfaea // RGB for bright red
@@ -138,13 +138,13 @@ void loop()
         displayCurrentRate(unitRatesJson);
         if (tomorrowRatesFetched)
         {
-            displayNext12RatesText(unitRatesJson);                                      // Display next six rates as text
             displayBarChart(unitRatesTomorrowJson, currentRateHeight + barChartHeight); // Set offsetY to currentRateHeight + barChartHeight
+            displayNext12RatesText(unitRatesJson, currentRateHeight);                                      // Display next 12 rates as text
         }
         else
         {
             displayBarChart(unitRatesJson, currentRateHeight); // Set offsetY to currentRateHeight
-            displayNext12RatesText(unitRatesJson);             // Display next six rates as text
+            displayNext12RatesText(unitRatesJson, currentRateHeight + barChartHeight);             // Display next 12 rates as text
         }
         // In the future the delay will be 30 minutes, indicate we drawn the first time.
         displayDrawn = true;
@@ -588,7 +588,7 @@ void displayBarChart(const String &ratesJson, int offsetY)
     tft.print("30");
 }
 
-void displayNext12RatesText(const String &ratesJson)
+void displayNext12RatesText(const String &ratesJson, int offsetY)
 {
     // Parse the JSON response
     StaticJsonDocument<1024> doc; // Adjust size as needed
@@ -601,7 +601,7 @@ void displayNext12RatesText(const String &ratesJson)
     }
 
     // Clear the display for the next five rates
-    tft.fillRect(0, currentRateHeight + barChartHeight, width, nextFiveRatesHeight, WROVER_BLACK); // Clear the next five rates section
+    tft.fillRect(0, offsetY, width, nextRatesHeight, WROVER_BLACK); // Clear the next five rates section
 
     // Get the number of rates
     JsonArray results = doc.as<JsonArray>();
@@ -643,14 +643,14 @@ void displayNext12RatesText(const String &ratesJson)
         if (i <= 6)
         {
             // Set cursor position for each rate on left
-            tft.setCursor(10, currentRateHeight + barChartHeight + ((i - 1) * 20) + 10); // Adjust Y position for each rate
+            tft.setCursor(10, offsetY + ((i - 1) * 20) + 10); // Adjust Y position for each rate
             tft.setTextSize(2);                                                          // Set text size
             tft.print(message);                                                          // Display the time range and rate value
         }
-        else
+        elsecurrentRateHeight + barChartHeight
         {
             // Set cursor position for each rate on right
-            tft.setCursor(130, currentRateHeight + barChartHeight + ((y - 1) * 20) + 10); // Adjust Y position for each rate
+            tft.setCursor(130, offsetY + ((y - 1) * 20) + 10); // Adjust Y position for each rate
             tft.setTextSize(2);                                                           // Set text size
             tft.print(message);                                                           // Display the time range and rate value
             y++;
