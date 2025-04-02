@@ -1,5 +1,11 @@
 # Octopus Energy Rate Display
 
+![Daytime](static/daytime.jpg "Daytime display")
+![Evning](static/evning.jpg "Evning display")
+
+
+
+
 ## Overview
 The Octopus Energy Rate Display project is an Arduino-based application that fetches and displays electricity unit rates from the Octopus Energy API. It utilizes an LCD screen to present the current rate, a bar chart of rates, and the next six rates in a user-friendly format.
 
