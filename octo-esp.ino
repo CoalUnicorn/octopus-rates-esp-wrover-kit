@@ -8,6 +8,9 @@
 
 char ssid[] = SECRET_SSID;
 char password[] = SECRET_PASS;
+// Replace with your network credentials
+// const char* ssid = "";     // Your Wi-Fi SSID
+// const char* password = ""; // Your Wi-Fi password
 
 // Octopus Energy API configuration
 char apiKey[] = API_KEY;               // Your API key
@@ -37,7 +40,7 @@ bool displayDrawn = false;
 // Define new height allocations
 uint16_t currentRateHeight = 60;    // Height for current rate display
 uint16_t barChartHeight = 130;      // Height for bar chart display
-uint16_t nextRatesHeight = 130; // Height for next 12 rates display
+uint16_t nextRatesHeight = 130; // Height for next five rates display
 
 // Define a new color constant for bright red
 #define BRIGHT_RED 0xfaea // RGB for bright red
@@ -399,7 +402,12 @@ String reduceRatesFromCurrentTime(const String &ratesJson)
         return ""; // Return empty if parsing fails
     }
 
-    // Serial.println("Filtered Rates JSON: " + result); // Debug print
+    // // Check if the number of records is less than 16
+    // if (filteredDoc.size() < 16) {
+    //     String additionalRecords = addRecordsFromTomorrow(20, unitRatesTomorrowJson); // Get additional records
+    //     result += additionalRecords.substring(1, additionalRecords.length() - 1); // Append without brackets
+    // }
+    Serial.println("Filtered Rates JSON: " + result); // Debug print
 
     return result; // Return the filtered JSON response
 }
@@ -474,7 +482,7 @@ void displayBarChart(const String &ratesJson, int offsetY)
     }
 
     // Clear the display for the bar chart
-    tft.fillRect(0, offsetY, width, barChartHeight, WROVER_BLACK); // Clear the bar chart section
+    tft.fillRect(0, currentRateHeight, width, offsetY, WROVER_BLACK); // Clear the bar chart section
 
     // Get the number of rates
     JsonArray results = doc.as<JsonArray>();
@@ -639,7 +647,7 @@ void displayNext12RatesText(const String &ratesJson, int offsetY)
             tft.setTextSize(2);                                                          // Set text size
             tft.print(message);                                                          // Display the time range and rate value
         }
-        else
+        elsecurrentRateHeight + barChartHeight
         {
             // Set cursor position for each rate on right
             tft.setCursor(130, offsetY + ((y - 1) * 20) + 10); // Adjust Y position for each rate
