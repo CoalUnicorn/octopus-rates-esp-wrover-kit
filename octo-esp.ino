@@ -8,9 +8,6 @@
 
 char ssid[] = SECRET_SSID;
 char password[] = SECRET_PASS;
-// Replace with your network credentials
-// const char* ssid = "";     // Your Wi-Fi SSID
-// const char* password = ""; // Your Wi-Fi password
 
 // Octopus Energy API configuration
 char apiKey[] = API_KEY;               // Your API key
@@ -34,13 +31,42 @@ WROVER_KIT_LCD tft;
 uint16_t height = tft.height(); // (=320)
 uint16_t width = tft.width();   // (=240)
 
+
+String lastFetchedDate = ""; // Variable to store the last fetched date
+
 bool tomorrowRatesFetched = false;
 bool displayDrawn = false;
 
 // Define new height allocations
-uint16_t currentRateHeight = 60;    // Height for current rate display
-uint16_t barChartHeight = 130;      // Height for bar chart display
-uint16_t nextRatesHeight = 130; // Height for next five rates display
+uint16_t Header = 60;    // Height for current rate display
+uint16_t Data = 130;     // Height for Data or Chart
+
+
+    //           H E A D E R
+    // +--------+-----------+---------+
+    // | Rate   | time_from | Avg:    |
+    // +        +-----------+---------+
+    // |  | p   | time_to   | avg_val |
+    // +--------+-----------+---------+
+    // |                              |
+    // |                              |
+    // |           D A T A            |
+    // |              or              |
+    // |          C H A R T           |
+    // |                              |
+    // |                              |
+    // |                              |
+    // +--------+-----------+---------+
+    // |                              |
+    // |                              |
+    // |           D A T A            |
+    // |              or              |
+    // |          C H A R T           |
+    // |                              |
+    // |                              |
+    // |                              |
+    // +--------+-----------+---------+
+
 
 // Define a new color constant for bright red
 #define BRIGHT_RED 0xfaea // RGB for bright red
@@ -75,7 +101,6 @@ void setup()
 void loop()
 {
 
-    String lastFetchedDate = ""; // Variable to store the last fetched date
     String unitRatesJson = "";
     String unitRatesTomorrowJson = "";
     // Get the current date
@@ -99,7 +124,6 @@ void loop()
         Serial.println("Current date has changed. Fetching unit rates...");
         lastFetchedDate = currentDate;                 // Update the last fetched date
         unitRatesJson = fetchRateForDate(currentDate); // Fetch unit rates and store the JSON response
-        // Serial.println("Unit Rates JSON: " + unitRatesJson); // Print the JSON response
 
         // reset tomorrow Rates status
         tomorrowRatesFetched = false;
@@ -136,21 +160,35 @@ void loop()
         unitRatesJson = reduceRatesFromCurrentTime(unitRatesJson);
 
         displayCurrentRate(unitRatesJson);
+
         if (tomorrowRatesFetched)
         {
-            displayBarChart(unitRatesTomorrowJson, currentRateHeight + barChartHeight); // Set offsetY to currentRateHeight + barChartHeight
-            displayNext12RatesText(unitRatesJson, currentRateHeight);                                      // Display next 12 rates as text
+            displayCheapEnergy(findLowestConsecutiveRates(unitRatesTomorrowJson));
+            displayBarChart(unitRatesTomorrowJson, Header + Data); // Set offsetY to currentRateHeight + barChartHeight
+            displayNext12RatesText(unitRatesJson, Header);                                      // Display next 12 rates as text
         }
         else
         {
-            displayBarChart(unitRatesJson, currentRateHeight); // Set offsetY to currentRateHeight
-            displayNext12RatesText(unitRatesJson, currentRateHeight + barChartHeight);             // Display next 12 rates as text
+            displayCheapEnergy(findLowestConsecutiveRates(unitRatesJson));
+            displayBarChart(unitRatesJson, Header); // Set offsetY to currentRateHeight
+            displayNext12RatesText(unitRatesJson, Header + Data);             // Display next 12 rates as text
         }
         // In the future the delay will be 30 minutes, indicate we drawn the first time.
         displayDrawn = true;
     }
 
     delay(30000); // Update every 30 seconds
+}
+
+
+StaticJsonDocument<1024> parseRatesJson(const String &ratesJson) {
+    StaticJsonDocument<1024> doc; // Adjust size as needed
+    DeserializationError error = deserializeJson(doc, ratesJson);
+    if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+    }
+    return doc;
 }
 
 String fetchRateForDate(const String &date)
@@ -277,6 +315,7 @@ String fetchRateForDate(const String &date)
     return ""; // Return empty if not connected or if there was an error
 }
 
+
 String extractTariffCode(String payload)
 {
     // Create a JSON document
@@ -344,14 +383,15 @@ String getTomorrowDate()
 
 String reduceRatesFromCurrentTime(const String &ratesJson)
 {
-    // Parse the JSON response
+    // Create a JSON document
     StaticJsonDocument<1024> doc; // Adjust size as needed
+
+    // Parse the JSON response
     DeserializationError error = deserializeJson(doc, ratesJson);
-    if (error)
-    {
-        Serial.print(F("deserializeJson() failed in reduceRatesFromCurrentTime(): "));
+    if (error) {
+        Serial.print(F("deserializeJson() failed in displayCheapEnergy(): "));
         Serial.println(error.f_str());
-        return ""; // Return empty if parsing fails
+        return ""; // Exit if parsing fails
     }
 
     // Get the current time
@@ -412,19 +452,108 @@ String reduceRatesFromCurrentTime(const String &ratesJson)
     return result; // Return the filtered JSON response
 }
 
+String findLowestConsecutiveRates(const String &ratesJson) {
+    // Create a JSON document
+    StaticJsonDocument<1024> doc; // Adjust size as needed
+
+    // Parse the JSON response
+    DeserializationError error = deserializeJson(doc, ratesJson);
+    if (error) {
+        Serial.print(F("deserializeJson() failed in displayCheapEnergy(): "));
+        Serial.println(error.f_str());
+        return ""; // Exit if parsing fails
+    }
+
+    // Get the number of rates
+    JsonArray results = doc.as<JsonArray>();
+    int numRates = results.size();
+
+    // Ensure there are at least 6 rates
+    if (numRates < 6) {
+        return ""; // Return empty if there are fewer than 6 rates
+    }
+
+    // Initialize variables to track the lowest sum and its starting index
+    float lowestSum = 1024; // A very high initial value
+    int startIndex = 0;
+    bool hasLowRate = false; // Flag to check if any rate in the window is below 11
+
+    // Iterate through the rates to find the 6 consecutive rates with the lowest sum
+    for (int i = 0; i <= numRates - 6; i++) {
+        float currentSum = 0;
+        bool currentHasLowRate = false; // Flag for the current window
+        for (int j = 0; j < 6; j++) {
+            float rateValue = results[i + j]["value_inc_vat"].as<float>(); // Convert to float
+            currentSum += rateValue;
+            if (rateValue < 11) {
+                currentHasLowRate = true; // Mark if any rate in the window is below 11
+            }
+        }
+        // Update the lowest sum if the current window has a lower sum and contains a rate below 11
+        if (currentSum < lowestSum && currentHasLowRate) {
+            lowestSum = currentSum;
+            startIndex = i;
+            hasLowRate = true; // Mark that we have found a window with a rate below 11
+        }
+    }
+
+    // If no window has a rate below 11, fall back to the original logic
+    if (!hasLowRate) {
+        for (int i = 0; i <= numRates - 6; i++) {
+            float currentSum = 0;
+            for (int j = 0; j < 6; j++) {
+                currentSum += results[i + j]["value_inc_vat"].as<float>(); // Convert to float
+            }
+            if (currentSum < lowestSum) {
+                lowestSum = currentSum;
+                startIndex = i;
+            }
+        }
+    }
+
+    // Prepare the result string with the details of the 6 consecutive rates
+    String result = "[";
+    for (int i = 0; i < 6; i++) {
+        JsonObject rate = results[startIndex + i];
+        float valueIncVat = rate["value_inc_vat"].as<float>(); // Convert to float
+        const char *validFrom = rate["valid_from"];
+        const char *validTo = rate["valid_to"];
+
+        result += String("{\"value_inc_vat\":") + valueIncVat +
+                  String(",\"valid_from\":\"") + validFrom +
+                  String("\",\"valid_to\":\"") + validTo + "\"},";
+    }
+
+    // Remove the last comma and close the JSON array
+    if (result.length() > 1) {
+        result.remove(result.length() - 1); // Remove last comma
+    }
+    result += "]";
+
+    return result;
+}
+
+    // Display the Header on the LCD
+    //
+    //  R a t e
+    // +--------+-----------+---------+
+    // | Rate   | time_from | Avg:    |
+    // +        +-----------+---------+
+    // |  | p   | time_to   | avg_val |
+    // +--------+-----------+---------+
+
 void displayCurrentRate(const String &ratesJson)
 {
     // Parse the filtered JSON response
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    DeserializationError error = deserializeJson(doc, ratesJson);
-    if (error)
-    {
-        Serial.print(F("deserializeJson() failed in displayCurrentRate(): "));
-        Serial.println(error.f_str());
+    StaticJsonDocument<1024> doc = parseRatesJson(ratesJson);
+    if (doc.isNull()) {
         return; // Exit if parsing fails
     }
+
     // Check if there are any valid rates
     JsonArray results = doc.as<JsonArray>();
+
+    int x_offset = (width / 2);
 
     if (results.size() > 0)
     {
@@ -435,7 +564,7 @@ void displayCurrentRate(const String &ratesJson)
         const char *validTo = rate["valid_to"];
 
         // Prepare the display message with rounded value and "/kWh"
-        String message = String((int)round(valueIncVat)) + "p/kWh";
+        String message = String((int)round(valueIncVat));
 
         // Determine text color based on valueIncVat
         if (valueIncVat <= 10)
@@ -451,38 +580,139 @@ void displayCurrentRate(const String &ratesJson)
             tft.setTextColor(BRIGHT_RED); // Set text color to bright red for above 20
         }
 
+
         // Display the message on the LCD
-        tft.fillRect(0, 0, width, currentRateHeight, WROVER_BLACK); // Clear the top section for current rate
-        tft.setCursor(35, 5);
+        tft.fillRect(0, 0, x_offset, Header, WROVER_BLACK); // Clear the top section for current rate
+        tft.setCursor(15, 5);
         tft.setTextSize(7);                                    // Set text size for the rate value
-        tft.print(message.substring(0, message.length() - 5)); // Print the rate value
+        tft.print(message); // Print the rate value
+        tft.setCursor(x_offset - 25, 30);
         tft.setTextSize(3);                                    // Set text size for "/kWh"
-        tft.print(message.substring(message.length() - 5));    // Print "/kWh"
+        tft.print("p");    // Print "/kWh"
     }
     else
     {
         // No valid rates found
-        tft.fillRect(0, 0, width, currentRateHeight, WROVER_BLACK); // Clear the top section for current rate
-        tft.setCursor(10, 15);
+        tft.fillRect(0, 0, x_offset, Header, WROVER_BLACK); // Clear the top section for current rate
+        tft.setCursor(5, 15);
+        tft.setTextSize(1);
         tft.setTextColor(WROVER_WHITE); // Set text color to white for "No valid rates"
         tft.print("No valid rates");
     }
 }
 
+    // Display the Header on the LCD
+    // 
+    //            R i g h t   p a r t
+    // +--------+-----------+---------+
+    // | Rate   | time_from | Avg:    |
+    // +        +-----------+---------+
+    // |  | p   | time_to   | avg_val |
+    // +--------+-----------+---------+
+void displayCheapEnergy(const String &ratesJson) {
+    // Parse the JSON response
+    StaticJsonDocument<1024> doc = parseRatesJson(ratesJson);
+    if (doc.isNull()) {
+        return; // Exit if parsing fails
+    }
+
+    // Get the number of rates
+    JsonArray results = doc.as<JsonArray>();
+    int numRates = results.size();
+    int x_offset = (width / 2);
+
+    // Ensure there are rates to process
+    if (numRates == 0) {
+        tft.fillRect(x_offset, 0, width, Header, WROVER_BLACK); // Clear the top section
+        tft.setCursor(x_offset + 10, 15);
+        tft.setTextSize(1);
+        tft.setTextColor(WROVER_WHITE); // Set text color to white for "No valid rates"
+        tft.print("No valid rates");
+        return;
+    }
+
+    // Initialize variables to track min valid_from, max valid_to, and total value_inc_vat
+    String minValidFrom = results[0]["valid_from"];
+    String maxValidTo = results[0]["valid_to"];
+    float totalValueIncVat = 0;
+
+    // Iterate through the rates to find min valid_from, max valid_to, and sum of value_inc_vat
+    for (JsonObject rate : results) {
+        String validFrom = rate["valid_from"];
+        String validTo = rate["valid_to"];
+        float valueIncVat = rate["value_inc_vat"];
+
+        if (validFrom < minValidFrom) {
+            minValidFrom = validFrom;
+        }
+        if (validTo > maxValidTo) {
+            maxValidTo = validTo;
+        }
+        totalValueIncVat += valueIncVat;
+    }
+
+    // Calculate the average value_inc_vat
+    int averageValueIncVat = (int)round(totalValueIncVat / numRates);
+
+    // Prepare the display message
+    String time_from = minValidFrom.substring(11, 16);
+    String time_to = maxValidTo.substring(11, 16);
+
+    // Determine text color based on valueIncVat
+    if (averageValueIncVat <= 15)
+    {
+        tft.setTextColor(WROVER_GREEN); // Set text color to green for 10 and below
+    }
+    else if (averageValueIncVat <= 25)
+    {
+        tft.setTextColor(WROVER_YELLOW); // Set text color to yellow for 20 and below
+    }
+    else
+    {
+        tft.setTextColor(BRIGHT_RED); // Set text color to bright red for above 20
+    }
+
+    // Display the message on the LCD
+
+    // +--------+-----------+---------+
+    // | Rate   | time_from | Avg:    |
+    // +        +-----------+---------+
+    // |  | p   | time_to   | avg_val |
+    // +--------+-----------+---------+
+    tft.fillRect(x_offset + 4, 0, width, Header, WROVER_BLACK); // Clear the top section
+    tft.setCursor(x_offset + 5, 5);
+    tft.setTextSize(2); // Set text size
+    tft.print(time_from);
+
+    tft.setCursor(x_offset + 22, 23);
+    tft.print("\\/");
+
+    tft.setCursor(x_offset + 5, 40);
+    tft.print(time_to);
+
+
+    tft.setCursor(x_offset + 70 , 5);
+    tft.print("Avg:");
+    tft.setCursor(x_offset + 70, 25);
+    tft.setTextSize(3);
+    tft.print(averageValueIncVat);
+    tft.setCursor(x_offset + 75, 50);
+    tft.setTextSize(1);
+    tft.print("p/kWh");
+}
+
+// ... existing code ...
+
 void displayBarChart(const String &ratesJson, int offsetY)
 {
     // Parse the JSON response
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    DeserializationError error = deserializeJson(doc, ratesJson);
-    if (error)
-    {
-        Serial.print(F("deserializeJson() failed in displayBarChart(): "));
-        Serial.println(error.f_str());
+    StaticJsonDocument<1024> doc = parseRatesJson(ratesJson);
+    if (doc.isNull()) {
         return; // Exit if parsing fails
     }
 
     // Clear the display for the bar chart
-    tft.fillRect(0, currentRateHeight, width, offsetY, WROVER_BLACK); // Clear the bar chart section
+    tft.fillRect(0, offsetY, width, Data, WROVER_BLACK); // Clear the bar chart section
 
     // Get the number of rates
     JsonArray results = doc.as<JsonArray>();
@@ -498,7 +728,7 @@ void displayBarChart(const String &ratesJson, int offsetY)
     // Define bar chart parameters
     int gapSize = 1;                             // Define a minimal gap size
     int barWidth = (width / numRates) - gapSize; // Width of each bar with gap
-    int maxBarHeight = barChartHeight;           // Maximum height of the bar (leaving space for labels)
+    int maxBarHeight = Data;           // Maximum height of the bar (leaving space for labels)
     float maxRate = 0;                           // Variable to find the maximum rate
 
     // Find the maximum rate for scaling
@@ -591,17 +821,13 @@ void displayBarChart(const String &ratesJson, int offsetY)
 void displayNext12RatesText(const String &ratesJson, int offsetY)
 {
     // Parse the JSON response
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    DeserializationError error = deserializeJson(doc, ratesJson);
-    if (error)
-    {
-        Serial.print(F("deserializeJson() failed in displayNextSixRatesText(): "));
-        Serial.println(error.f_str());
+    StaticJsonDocument<1024> doc = parseRatesJson(ratesJson);
+    if (doc.isNull()) {
         return; // Exit if parsing fails
     }
 
     // Clear the display for the next five rates
-    tft.fillRect(0, offsetY, width, nextRatesHeight, WROVER_BLACK); // Clear the next five rates section
+    tft.fillRect(0, offsetY, width, Data, WROVER_BLACK); // Clear the next five rates section
 
     // Get the number of rates
     JsonArray results = doc.as<JsonArray>();
@@ -647,7 +873,7 @@ void displayNext12RatesText(const String &ratesJson, int offsetY)
             tft.setTextSize(2);                                                          // Set text size
             tft.print(message);                                                          // Display the time range and rate value
         }
-        elsecurrentRateHeight + barChartHeight
+        else
         {
             // Set cursor position for each rate on right
             tft.setCursor(130, offsetY + ((y - 1) * 20) + 10); // Adjust Y position for each rate
