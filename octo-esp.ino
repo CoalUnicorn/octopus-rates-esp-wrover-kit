@@ -440,7 +440,6 @@ String addRecordsFromTomorrow(int numRecords, const String &tomorrowRatesJson) {
   return result;
 }
 
-
 String findLowestConsecutiveRates(const String &ratesJson) {
   // Create a JSON document
   StaticJsonDocument<1024> doc;  // Adjust size as needed
@@ -448,7 +447,7 @@ String findLowestConsecutiveRates(const String &ratesJson) {
   // Parse the JSON response
   DeserializationError error = deserializeJson(doc, ratesJson);
   if (error) {
-    Serial.print(F("deserializeJson() failed in displayCheapEnergy(): "));
+    Serial.print(F("deserializeJson() failed in findLowestConsecutiveRates(): "));
     Serial.println(error.f_str());
     return "";  // Exit if parsing fails
   }
@@ -457,58 +456,99 @@ String findLowestConsecutiveRates(const String &ratesJson) {
   JsonArray results = doc.as<JsonArray>();
   int numRates = results.size();
 
-  // Ensure there are at least 6 rates
-  if (numRates < 6) {
-    return "";  // Return empty if there are fewer than 6 rates
+  // Ensure there is at least 1 rate
+  if (numRates < 1) {
+    return "";  // Return empty if there are no rates
   }
 
-  // Initialize variables to track the lowest sum and its starting index
-  float lowestSum = 1024;  // A very high initial value
-  int startIndex = 0;
-  bool hasLowRate = false;  // Flag to check if any rate in the window is below 11
+  // Initialize variables to track the current and longest sequences
+  int currentStart = -1;
+  int currentLength = 0;
+  int longestStart = -1;
+  int longestLength = 0;
 
-  // Iterate through the rates to find the 6 consecutive rates with the lowest sum
-  for (int i = 0; i <= numRates - 6; i++) {
-    float currentSum = 0;
-    bool currentHasLowRate = false;  // Flag for the current window
-    for (int j = 0; j < 6; j++) {
-      float rateValue = results[i + j]["value_inc_vat"].as<float>();  // Convert to float
-      currentSum += rateValue;
-      if (rateValue < 11) {
-        currentHasLowRate = true;  // Mark if any rate in the window is below 11
+  // Iterate through all rates to find the longest sequence of rates below 10
+  for (int i = 0; i < numRates; i++) {
+    float rateValue = results[i]["value_inc_vat"].as<float>();
+
+    if (rateValue < 10.0) {
+      // If this is the start of a new sequence
+      if (currentStart == -1) {
+        currentStart = i;
       }
-    }
-    // Update the lowest sum if the current window has a lower sum and contains a rate below 11
-    if (currentSum < lowestSum && currentHasLowRate) {
-      lowestSum = currentSum;
-      startIndex = i;
-      hasLowRate = true;  // Mark that we have found a window with a rate below 11
+      currentLength++;
+    } else {
+      // End of a sequence, check if it's the longest
+      if (currentLength > longestLength && currentStart != -1) {
+        longestLength = currentLength;
+        longestStart = currentStart;
+      }
+      // Reset current sequence tracking
+      currentStart = -1;
+      currentLength = 0;
     }
   }
 
-  // If no window has a rate below 11, fall back to the original logic
-  if (!hasLowRate) {
+  // Check one more time in case the sequence extends to the end of the array
+  if (currentLength > longestLength && currentStart != -1) {
+    longestLength = currentLength;
+    longestStart = currentStart;
+  }
+
+  // If we didn't find any sequence with rates below 10, fall back to the original logic
+  if (longestLength == 0) {
+    // Use original logic to find 6 consecutive rates with lowest sum
+    float lowestSum = 1024;  // A very high initial value
+    int startIndex = 0;
+    bool hasLowRate = false;  // Flag to check if any rate in the window is below 11
+
+    // Find 6 consecutive rates with the lowest sum
     for (int i = 0; i <= numRates - 6; i++) {
       float currentSum = 0;
+      bool currentHasLowRate = false;  // Flag for the current window
       for (int j = 0; j < 6; j++) {
-        currentSum += results[i + j]["value_inc_vat"].as<float>();  // Convert to float
+        float rateValue = results[i + j]["value_inc_vat"].as<float>();
+        currentSum += rateValue;
+        if (rateValue < 11) {
+          currentHasLowRate = true;
+        }
       }
-      if (currentSum < lowestSum) {
+      if (currentSum < lowestSum && currentHasLowRate) {
         lowestSum = currentSum;
         startIndex = i;
+        hasLowRate = true;
       }
     }
+
+    // If no window has a rate below 11, find lowest sum without restrictions
+    if (!hasLowRate) {
+      for (int i = 0; i <= numRates - 6; i++) {
+        float currentSum = 0;
+        for (int j = 0; j < 6; j++) {
+          currentSum += results[i + j]["value_inc_vat"].as<float>();
+        }
+        if (currentSum < lowestSum) {
+          lowestSum = currentSum;
+          startIndex = i;
+        }
+      }
+    }
+
+    longestStart = startIndex;
+    longestLength = 6;
   }
 
-  // Prepare the result string with the details of the 6 consecutive rates
+  // Prepare the result string with the details of the found rates
   String result = "[";
-  for (int i = 0; i < 6; i++) {
-    JsonObject rate = results[startIndex + i];
-    float valueIncVat = rate["value_inc_vat"].as<float>();  // Convert to float
+  for (int i = 0; i < longestLength; i++) {
+    JsonObject rate = results[longestStart + i];
+    float valueIncVat = rate["value_inc_vat"].as<float>();
     const char *validFrom = rate["valid_from"];
     const char *validTo = rate["valid_to"];
 
-    result += String("{\"value_inc_vat\":") + valueIncVat + String(",\"valid_from\":\"") + validFrom + String("\",\"valid_to\":\"") + validTo + "\"},";
+    result += String("{\"value_inc_vat\":") + valueIncVat +
+              String(",\"valid_from\":\"") + validFrom +
+              String("\",\"valid_to\":\"") + validTo + "\"},";
   }
 
   // Remove the last comma and close the JSON array
