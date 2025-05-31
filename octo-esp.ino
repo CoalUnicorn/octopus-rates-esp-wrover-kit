@@ -9,6 +9,7 @@
 
 void displayNext12RatesText(const String &ratesJson, int offsetY);
 void displayBarChart(const String &ratesJson, int offsetY);
+StaticJsonDocument<1024> parseRatesJson(const String &ratesJson);
 
 char ssid[] = SECRET_SSID;
 char password[] = SECRET_PASS;
@@ -40,6 +41,7 @@ String lastFetchedDate = "";        // Variable to store the last fetched date
 String unitRatesJson = "";          // today's rates
 String unitRatesTomorrowJson = "";  // tomorrow's rates
 bool tomorrowRatesFetched = false;
+bool todayRatesFetched = false;
 bool displayDrawn = false;
 
 // Define new height allocations
@@ -104,6 +106,10 @@ void setup() {
 void loop() {
 
   // String unitRatesJson = "";
+  time_t now;
+  struct tm timeinfo;
+  time(&now);
+  localtime_r(&now, &timeinfo);
 
   // Get the current date
   String currentDate;
@@ -122,25 +128,36 @@ void loop() {
   if (currentDate != lastFetchedDate) {
     Serial.println("Current date has changed. Fetching unit rates...");
     lastFetchedDate = currentDate;                  // Update the last fetched date
-    unitRatesJson = fetchRateForDate(currentDate);  // Fetch unit rates and store the JSON response
+    if (!todayRatesFetched) {
+      unitRatesJson = fetchRateForDate(currentDate);  // Fetch unit rates and store the JSON response
+      StaticJsonDocument<1024> doc_today = parseRatesJson(unitRatesJson);
+      uint8_t expectedSize = (timeinfo.tm_hour*2) + (timeinfo.tm_min > 30 ? 1 : 0);
+      if (doc_today.size() == expectedSize) { todayRatesFetched = true; } else { Serial.println("Today's rates incomplete."); todayRatesFetched = false; }
+    } else {
 
+    }
     // reset tomorrow Rates status
     tomorrowRatesFetched = false;
     unitRatesTomorrowJson = "";
   }
 
   // Check if the current time is after 16:00 (4 PM), the new rates may be available
-  time_t now;
-  struct tm timeinfo;
-  time(&now);
-  localtime_r(&now, &timeinfo);
+
 
   if (timeinfo.tm_hour >= 16 && !tomorrowRatesFetched) {     // Condition to check if it's after 16:00
     unitRatesTomorrowJson = fetchRateForDate(tomorrowDate);  // Update tomorrow's rates
-    if (!unitRatesTomorrowJson.isEmpty()) {                  // Check if the fetch was successful
-      // update tomorrow Rates status, only needs to be updated once
-      tomorrowRatesFetched = true;
-    } else {
+    if (!unitRatesTomorrowJson.isEmpty()) {      
+        // Parse JSON to check number of records
+        StaticJsonDocument<1024> doc_tomorrow = parseRatesJson(unitRatesTomorrowJson);
+
+        if (doc_tomorrow.size() == 48) {
+          // update tomorrow Rates status, only needs to be updated once
+          tomorrowRatesFetched = true;
+        } else {
+          Serial.println("Tomorrow's rates incomplete.");
+          tomorrowRatesFetched = false;
+        }
+      } else {
       Serial.println("Failed to fetch tomorrow's rates.");  // Log failure
       tomorrowRatesFetched = false;
     }
