@@ -202,21 +202,37 @@ void handleTomorrowRatesFetching(const String &tomorrowDate, struct tm &timeinfo
   // Try to fetch tomorrow's rates if after 16:00 and not complete
   if (timeinfo.tm_hour >= 16 && !tomorrowRatesFetched) {
     unitRatesTomorrowJson = fetchRateForDate(tomorrowDate);  // Update tomorrow's rates
-    if (!unitRatesTomorrowJson.isEmpty()) {      
+    if (!unitRatesTomorrowJson.isEmpty()) {
         // Parse JSON to check number of records
         StaticJsonDocument<1024> doc_tomorrow = parseRatesJson(unitRatesTomorrowJson);
         uint8_t actualTomorrowRecords = doc_tomorrow.size();
-        
+
         Serial.print("Tomorrow's rates: got ");
         Serial.print(actualTomorrowRecords);
         Serial.println(" records, expected: 48");
 
-        if (actualTomorrowRecords == 48) {
-          // update tomorrow Rates status, only needs to be updated once
+        // HYBRID RETRY STRATEGY:
+        // 1. Prefer complete data (48 records)
+        // 2. Keep retrying throughout the evening
+        // 3. After 22:00, accept 46+ records if complete data still unavailable
+        //    (Octopus API sometimes publishes last 2 slots late)
+        bool isLateEvening = (timeinfo.tm_hour >= 22);
+        bool hasCompleteData = (actualTomorrowRecords == 48);
+        bool hasMostlyCompleteData = (actualTomorrowRecords >= 46);
+
+        if (hasCompleteData) {
           tomorrowRatesFetched = true;
-          Serial.println("Tomorrow's rates complete.");
+          Serial.println("Tomorrow's rates complete (48/48).");
+        } else if (isLateEvening && hasMostlyCompleteData) {
+          // After 22:00, accept incomplete data rather than show nothing
+          tomorrowRatesFetched = true;
+          Serial.print("Tomorrow's rates accepted late evening (");
+          Serial.print(actualTomorrowRecords);
+          Serial.println("/48). Last slots unavailable from API.");
         } else {
-          Serial.println("Tomorrow's rates incomplete, will retry.");
+          Serial.print("Tomorrow's rates incomplete (");
+          Serial.print(actualTomorrowRecords);
+          Serial.println("/48), will retry...");
           tomorrowRatesFetched = false;
         }
       } else {
@@ -254,7 +270,10 @@ String fetchRateForDate(const String &date) {
       if (tariffCode.length() > 0) {
         String productCode = extractProductCode(tariffCode);
 
-        String url = String(baseUrl) + "/products/" + productCode + "/electricity-tariffs/" + tariffCode + "/standard-unit-rates/?period_from=" + date + "T00:00Z&period_to=" + date + "T23:59Z";  // + tomorrowDate + "T00:00Z"; | + date + "T23:59Z";
+        // Request full day of rates (00:00 to 23:59)
+        // Note: API should return 48 half-hourly slots, but tomorrow's data may initially
+        // be incomplete with the last 2 evening slots (23:00-00:00) published later
+        String url = String(baseUrl) + "/products/" + productCode + "/electricity-tariffs/" + tariffCode + "/standard-unit-rates/?period_from=" + date + "T00:00Z&period_to=" + date + "T23:59Z";
 
         // Fetch unit rates
         http.begin(url);                    // Specify the URL for unit rates
@@ -277,6 +296,29 @@ String fetchRateForDate(const String &date) {
           String result = "[";
           JsonArray results = doc["results"].as<JsonArray>();  // Directly access the array
           int numBars = results.size();
+
+          // DIAGNOSTIC: Log API response details
+          Serial.println("=== API RESPONSE DIAGNOSTICS ===");
+          Serial.print("Date requested: ");
+          Serial.println(date);
+          Serial.print("Number of records received: ");
+          Serial.println(numBars);
+          Serial.print("Expected records for full day: 48");
+          Serial.println();
+
+          if (numBars > 0) {
+            JsonObject firstRate = results[0];
+            JsonObject lastRate = results[numBars - 1];
+            Serial.print("First record: ");
+            Serial.print(firstRate["valid_from"].as<const char*>());
+            Serial.print(" to ");
+            Serial.println(firstRate["valid_to"].as<const char*>());
+            Serial.print("Last record: ");
+            Serial.print(lastRate["valid_from"].as<const char*>());
+            Serial.print(" to ");
+            Serial.println(lastRate["valid_to"].as<const char*>());
+          }
+          Serial.println("================================");
 
           // Create a temporary array to hold the JSON objects
           String tempResults[numBars];
@@ -318,6 +360,10 @@ String fetchRateForDate(const String &date) {
             result.remove(result.length() - 1);  // Remove last comma
           }
           result += "]";
+
+          // DIAGNOSTIC: Show data after reversal
+          Serial.println("After reversal, data now goes from newest to oldest");
+          Serial.println("================================");
 
           http.end();     // Free resources
           return result;  // Return the formatted JSON response
@@ -419,9 +465,19 @@ String reduceRatesFromCurrentTime(const String &ratesJson) {
   strftime(currentTimeBuffer, sizeof(currentTimeBuffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
   String currentTime(currentTimeBuffer);
 
+  // DIAGNOSTIC: Log filtering process
+  Serial.println("=== FILTERING DIAGNOSTICS ===");
+  Serial.print("Current time: ");
+  Serial.println(currentTime);
+  JsonArray inputResults = doc.as<JsonArray>();
+  Serial.print("Input records: ");
+  Serial.println(inputResults.size());
+
   // Filter rates based on the current time
   String result = "[";
   JsonArray results = doc.as<JsonArray>();
+  int keptCount = 0;
+  int filteredCount = 0;
   for (JsonObject rate : results) {
     const char *validFrom = rate["valid_from"];
     const char *validTo = rate["valid_to"];
@@ -434,8 +490,16 @@ String reduceRatesFromCurrentTime(const String &ratesJson) {
     if (now <= validToTimestamp) {
       // Append to result string
       result += String("{\"value_inc_vat\":") + String(rate["value_inc_vat"].as<float>()) + String(",\"valid_from\":\"") + validFrom + String("\",\"valid_to\":\"") + validTo + "\"},";
+      keptCount++;
+    } else {
+      filteredCount++;
     }
   }
+
+  Serial.print("Kept records (future): ");
+  Serial.println(keptCount);
+  Serial.print("Filtered records (past): ");
+  Serial.println(filteredCount);
 
   // Remove the last comma and close the JSON array
   if (result.length() > 1) {
@@ -455,13 +519,35 @@ String reduceRatesFromCurrentTime(const String &ratesJson) {
   // Check if the number of records is less than 18
   if (filteredDoc.size() < 18) {
     int recordsNeeded = 18 - filteredDoc.size();  // Calculate how many records we need
+    Serial.print("Need to add ");
+    Serial.print(recordsNeeded);
+    Serial.println(" records from tomorrow");
     String additionalRecords = addRecordsFromTomorrow(recordsNeeded, unitRatesTomorrowJson);  // Get additional records
     if (additionalRecords.length() > 2) {  // Check if we got valid records (more than just "[]")
       result = result.substring(0, result.length() - 1);  // Remove closing bracket
       result += "," + additionalRecords.substring(1, additionalRecords.length() - 1) + "]";  // Append records and close bracket
     }
   }
-  Serial.println("Filtered Rates JSON: " + result);  // Debug print
+
+  // DIAGNOSTIC: Show final filtered result
+  StaticJsonDocument<1024> finalDoc;
+  deserializeJson(finalDoc, result);
+  Serial.print("Final output records: ");
+  Serial.println(finalDoc.size());
+  if (finalDoc.size() > 0) {
+    JsonArray finalArray = finalDoc.as<JsonArray>();
+    Serial.print("First output record: ");
+    Serial.print(finalArray[0]["valid_from"].as<const char*>());
+    Serial.print(" to ");
+    Serial.println(finalArray[0]["valid_to"].as<const char*>());
+    if (finalDoc.size() > 1) {
+      Serial.print("Last output record: ");
+      Serial.print(finalArray[finalArray.size()-1]["valid_from"].as<const char*>());
+      Serial.print(" to ");
+      Serial.println(finalArray[finalArray.size()-1]["valid_to"].as<const char*>());
+    }
+  }
+  Serial.println("=============================");
 
   return result;  // Return the filtered JSON response
 }
