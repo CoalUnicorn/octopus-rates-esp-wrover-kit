@@ -10,6 +10,8 @@
 void displayNext12RatesText(const String &ratesJson, int offsetY);
 void displayBarChart(const String &ratesJson, int offsetY);
 StaticJsonDocument<1024> parseRatesJson(const String &ratesJson);
+void handleTodayRatesFetching(const String &currentDate, struct tm &timeinfo);
+void handleTomorrowRatesFetching(const String &tomorrowDate, struct tm &timeinfo);
 
 char ssid[] = SECRET_SSID;
 char password[] = SECRET_PASS;
@@ -128,40 +130,17 @@ void loop() {
   if (currentDate != lastFetchedDate) {
     Serial.println("Current date has changed. Fetching unit rates...");
     lastFetchedDate = currentDate;                  // Update the last fetched date
-    if (!todayRatesFetched) {
-      unitRatesJson = fetchRateForDate(currentDate);  // Fetch unit rates and store the JSON response
-      StaticJsonDocument<1024> doc_today = parseRatesJson(unitRatesJson);
-      uint8_t expectedSize = (timeinfo.tm_hour*2) + (timeinfo.tm_min > 30 ? 1 : 0);
-      if (doc_today.size() == expectedSize) { todayRatesFetched = true; } else { Serial.println("Today's rates incomplete."); todayRatesFetched = false; }
-    } else {
-
-    }
+    todayRatesFetched = false;  // Reset status to refetch for new date
     // reset tomorrow Rates status
     tomorrowRatesFetched = false;
     unitRatesTomorrowJson = "";
   }
 
-  // Check if the current time is after 16:00 (4 PM), the new rates may be available
+  // Handle today's rates fetching (with retry logic for incomplete data)
+  handleTodayRatesFetching(currentDate, timeinfo);
 
-
-  if (timeinfo.tm_hour >= 16 && !tomorrowRatesFetched) {     // Condition to check if it's after 16:00
-    unitRatesTomorrowJson = fetchRateForDate(tomorrowDate);  // Update tomorrow's rates
-    if (!unitRatesTomorrowJson.isEmpty()) {      
-        // Parse JSON to check number of records
-        StaticJsonDocument<1024> doc_tomorrow = parseRatesJson(unitRatesTomorrowJson);
-
-        if (doc_tomorrow.size() == 48) {
-          // update tomorrow Rates status, only needs to be updated once
-          tomorrowRatesFetched = true;
-        } else {
-          Serial.println("Tomorrow's rates incomplete.");
-          tomorrowRatesFetched = false;
-        }
-      } else {
-      Serial.println("Failed to fetch tomorrow's rates.");  // Log failure
-      tomorrowRatesFetched = false;
-    }
-  }
+  // Handle tomorrow's rates fetching (with retry logic for incomplete data)
+  handleTomorrowRatesFetching(tomorrowDate, timeinfo);
 
   // Check if we draw disply at start and update then only when the current time is at the whole hour or 30-minute mark
   if (!displayDrawn || timeinfo.tm_min == 0 || timeinfo.tm_min == 30) {
@@ -170,7 +149,7 @@ void loop() {
 
     displayCurrentRate(unitRatesJson);
 
-    if (tomorrowRatesFetched) {
+    if (!unitRatesTomorrowJson.isEmpty()) {
       displayCheapEnergy(findLowestConsecutiveRates(unitRatesTomorrowJson));
       displayBarChart(unitRatesTomorrowJson, Header + Data);
       displayNext12RatesText(unitRatesJson, Header);
@@ -185,6 +164,67 @@ void loop() {
   delay(30000);  // Update every 30 seconds
 }
 
+void handleTodayRatesFetching(const String &currentDate, struct tm &timeinfo) {
+  // Always try to fetch today's rates if incomplete
+  if (!todayRatesFetched) {
+    unitRatesJson = fetchRateForDate(currentDate);  // Fetch unit rates and store the JSON response
+    StaticJsonDocument<1024> doc_today = parseRatesJson(unitRatesJson);
+    
+    // Calculate expected number of records based on current time
+    // Each day has 48 half-hour slots (24 hours * 2)
+    uint8_t totalDayRecords = 48;
+    uint8_t currentRecords = (timeinfo.tm_hour * 2) + (timeinfo.tm_min >= 30 ? 1 : 0);
+    
+    // For current day, we expect at least the records up to current time
+    // But ideally we want all 48 records for the full day
+    uint8_t expectedMinimum = currentRecords;
+    uint8_t actualRecords = doc_today.size();
+    
+    Serial.print("Today's rates: got ");
+    Serial.print(actualRecords);
+    Serial.print(" records, minimum expected: ");
+    Serial.print(expectedMinimum);
+    Serial.print(" total day: ");
+    Serial.println(totalDayRecords);
+    
+    // Mark as fetched if we have at least the minimum required OR all 48 records
+    if (actualRecords >= expectedMinimum && (actualRecords == totalDayRecords || actualRecords >= expectedMinimum)) {
+      todayRatesFetched = true;
+      Serial.println("Today's rates complete.");
+    } else {
+      Serial.println("Today's rates incomplete, will retry.");
+      todayRatesFetched = false;
+    }
+  }
+}
+
+void handleTomorrowRatesFetching(const String &tomorrowDate, struct tm &timeinfo) {
+  // Try to fetch tomorrow's rates if after 16:00 and not complete
+  if (timeinfo.tm_hour >= 16 && !tomorrowRatesFetched) {
+    unitRatesTomorrowJson = fetchRateForDate(tomorrowDate);  // Update tomorrow's rates
+    if (!unitRatesTomorrowJson.isEmpty()) {      
+        // Parse JSON to check number of records
+        StaticJsonDocument<1024> doc_tomorrow = parseRatesJson(unitRatesTomorrowJson);
+        uint8_t actualTomorrowRecords = doc_tomorrow.size();
+        
+        Serial.print("Tomorrow's rates: got ");
+        Serial.print(actualTomorrowRecords);
+        Serial.println(" records, expected: 48");
+
+        if (actualTomorrowRecords == 48) {
+          // update tomorrow Rates status, only needs to be updated once
+          tomorrowRatesFetched = true;
+          Serial.println("Tomorrow's rates complete.");
+        } else {
+          Serial.println("Tomorrow's rates incomplete, will retry.");
+          tomorrowRatesFetched = false;
+        }
+      } else {
+      Serial.println("Failed to fetch tomorrow's rates, will retry.");
+      tomorrowRatesFetched = false;
+    }
+  }
+}
 
 StaticJsonDocument<1024> parseRatesJson(const String &ratesJson) {
   StaticJsonDocument<1024> doc;  // Adjust size as needed
@@ -412,10 +452,14 @@ String reduceRatesFromCurrentTime(const String &ratesJson) {
     return "";  // Return empty if parsing fails
   }
 
-  // Check if the number of records is less than 16
-  if (filteredDoc.size() < 16) {
-    String additionalRecords = addRecordsFromTomorrow(16, unitRatesTomorrowJson);  // Get additional records
-    result += additionalRecords.substring(1, additionalRecords.length() - 1);      // Append without brackets
+  // Check if the number of records is less than 18
+  if (filteredDoc.size() < 18) {
+    int recordsNeeded = 18 - filteredDoc.size();  // Calculate how many records we need
+    String additionalRecords = addRecordsFromTomorrow(recordsNeeded, unitRatesTomorrowJson);  // Get additional records
+    if (additionalRecords.length() > 2) {  // Check if we got valid records (more than just "[]")
+      result = result.substring(0, result.length() - 1);  // Remove closing bracket
+      result += "," + additionalRecords.substring(1, additionalRecords.length() - 1) + "]";  // Append records and close bracket
+    }
   }
   Serial.println("Filtered Rates JSON: " + result);  // Debug print
 
@@ -775,9 +819,11 @@ void displayBarChart(const String &ratesJson, int offsetY) {
   float rateRange = maxRate - minRate;
 
   // Calculate the zero line position (baseline)
-  int baselineY = offsetY + (int)((maxRate / rateRange) * maxBarHeight);
+  // Since both positive and negative values draw upward, position baseline where zero would be
+  // Zero is at distance |minRate| from the bottom of the range
+  int baselineY = offsetY + maxBarHeight - (int)((-minRate / rateRange) * maxBarHeight);
 
-  // Draw the zero baseline
+  // Draw the zero baseline - start from same x position as horizontal grid lines
   tft.fillRect(0, baselineY, width, 2, WROVER_WHITE);
 
   // Draw the bars
@@ -799,9 +845,9 @@ void displayBarChart(const String &ratesJson, int offsetY) {
       barHeight = (int)((valueIncVat / rateRange) * maxBarHeight);
       y = baselineY - barHeight;
     } else {
-      // Negative values: draw down from baseline
+      // Negative values: draw up from baseline (above x-axis)
       barHeight = (int)((-valueIncVat / rateRange) * maxBarHeight);
-      y = baselineY;
+      y = baselineY - barHeight;
     }
 
     // Calculate the position of the bar with a gap
