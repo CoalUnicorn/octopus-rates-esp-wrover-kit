@@ -202,19 +202,28 @@ void handleTomorrowRatesFetching(const String &tomorrowDate, struct tm &timeinfo
   // Try to fetch tomorrow's rates if after 16:00 and not complete
   if (timeinfo.tm_hour >= 16 && !tomorrowRatesFetched) {
     unitRatesTomorrowJson = fetchRateForDate(tomorrowDate);  // Update tomorrow's rates
-    if (!unitRatesTomorrowJson.isEmpty()) {      
+    if (!unitRatesTomorrowJson.isEmpty()) {
         // Parse JSON to check number of records
         StaticJsonDocument<1024> doc_tomorrow = parseRatesJson(unitRatesTomorrowJson);
         uint8_t actualTomorrowRecords = doc_tomorrow.size();
-        
+
         Serial.print("Tomorrow's rates: got ");
         Serial.print(actualTomorrowRecords);
         Serial.println(" records, expected: 48");
 
-        if (actualTomorrowRecords == 48) {
+        // Accept tomorrow's data if we have at least 46 records (95% complete)
+        // Octopus API often publishes the last 2 evening slots (23:00-00:00) later
+        // 46 records = full day minus last 2 half-hour slots, which is acceptable
+        if (actualTomorrowRecords >= 46) {
           // update tomorrow Rates status, only needs to be updated once
           tomorrowRatesFetched = true;
-          Serial.println("Tomorrow's rates complete.");
+          if (actualTomorrowRecords == 48) {
+            Serial.println("Tomorrow's rates complete (48/48).");
+          } else {
+            Serial.print("Tomorrow's rates mostly complete (");
+            Serial.print(actualTomorrowRecords);
+            Serial.println("/48). Last evening slots may be published later.");
+          }
         } else {
           Serial.println("Tomorrow's rates incomplete, will retry.");
           tomorrowRatesFetched = false;
@@ -254,7 +263,10 @@ String fetchRateForDate(const String &date) {
       if (tariffCode.length() > 0) {
         String productCode = extractProductCode(tariffCode);
 
-        String url = String(baseUrl) + "/products/" + productCode + "/electricity-tariffs/" + tariffCode + "/standard-unit-rates/?period_from=" + date + "T00:00Z&period_to=" + date + "T23:59Z";  // + tomorrowDate + "T00:00Z"; | + date + "T23:59Z";
+        // Request full day of rates (00:00 to 23:59)
+        // Note: API should return 48 half-hourly slots, but tomorrow's data may initially
+        // be incomplete with the last 2 evening slots (23:00-00:00) published later
+        String url = String(baseUrl) + "/products/" + productCode + "/electricity-tariffs/" + tariffCode + "/standard-unit-rates/?period_from=" + date + "T00:00Z&period_to=" + date + "T23:59Z";
 
         // Fetch unit rates
         http.begin(url);                    // Specify the URL for unit rates
