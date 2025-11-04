@@ -23,10 +23,12 @@ char mpan[] = MPAN;                     // Your MPAN
 char meterSerial[] = METER_SERIAL;      // Your meter serial number
 const char *baseUrl = "https://api.octopus.energy/v1";
 
-// Define timezone constants
-const long timezoneOffset_sec = 3600;               // Offset for BST (UTC+1)
-const long gmtOffset_sec = 0;                       // Base offset (UTC)
-const int daylightOffset_sec = timezoneOffset_sec;  // Daylight saving time adjustment
+// Timezone configuration for UK (GMT/BST with automatic DST transitions)
+// Format: GMT0BST,M3.5.0/1,M10.5.0
+// - GMT0BST: Standard time is GMT (UTC+0), DST is BST (UTC+1)
+// - M3.5.0/1: DST starts last Sunday of March at 1:00 AM
+// - M10.5.0: DST ends last Sunday of October at 2:00 AM (default)
+const char *timezone = "GMT0BST,M3.5.0/1,M10.5.0";
 
 // NTP server details
 const char *ntpServer = "pool.ntp.org";
@@ -101,8 +103,12 @@ void setup() {
 
   Serial.println("Connected to WiFi!");
 
-  // Initialize NTP
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  // Initialize NTP with timezone string for automatic DST handling
+  setenv("TZ", timezone, 1);
+  tzset();
+  configTime(0, 0, ntpServer);
+
+  Serial.println("NTP configured with timezone: GMT0BST (automatic DST)");
 }
 
 void loop() {
