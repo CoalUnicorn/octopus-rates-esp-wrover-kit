@@ -211,21 +211,28 @@ void handleTomorrowRatesFetching(const String &tomorrowDate, struct tm &timeinfo
         Serial.print(actualTomorrowRecords);
         Serial.println(" records, expected: 48");
 
-        // Accept tomorrow's data if we have at least 46 records (95% complete)
-        // Octopus API often publishes the last 2 evening slots (23:00-00:00) later
-        // 46 records = full day minus last 2 half-hour slots, which is acceptable
-        if (actualTomorrowRecords >= 46) {
-          // update tomorrow Rates status, only needs to be updated once
+        // HYBRID RETRY STRATEGY:
+        // 1. Prefer complete data (48 records)
+        // 2. Keep retrying throughout the evening
+        // 3. After 22:00, accept 46+ records if complete data still unavailable
+        //    (Octopus API sometimes publishes last 2 slots late)
+        bool isLateEvening = (timeinfo.tm_hour >= 22);
+        bool hasCompleteData = (actualTomorrowRecords == 48);
+        bool hasMostlyCompleteData = (actualTomorrowRecords >= 46);
+
+        if (hasCompleteData) {
           tomorrowRatesFetched = true;
-          if (actualTomorrowRecords == 48) {
-            Serial.println("Tomorrow's rates complete (48/48).");
-          } else {
-            Serial.print("Tomorrow's rates mostly complete (");
-            Serial.print(actualTomorrowRecords);
-            Serial.println("/48). Last evening slots may be published later.");
-          }
+          Serial.println("Tomorrow's rates complete (48/48).");
+        } else if (isLateEvening && hasMostlyCompleteData) {
+          // After 22:00, accept incomplete data rather than show nothing
+          tomorrowRatesFetched = true;
+          Serial.print("Tomorrow's rates accepted late evening (");
+          Serial.print(actualTomorrowRecords);
+          Serial.println("/48). Last slots unavailable from API.");
         } else {
-          Serial.println("Tomorrow's rates incomplete, will retry.");
+          Serial.print("Tomorrow's rates incomplete (");
+          Serial.print(actualTomorrowRecords);
+          Serial.println("/48), will retry...");
           tomorrowRatesFetched = false;
         }
       } else {
